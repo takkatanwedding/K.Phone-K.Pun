@@ -2,8 +2,8 @@
 <html lang="th"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>เข้าร่วมเกม</title><link rel="stylesheet" href="/style.css">
-</head><body>
-<div class="wrap">
+</head><body data-sfx="top">
+<div class="wrap fit">
   <div class="top"><img data-logo class="logo" alt="" style="display:none"><h1 data-title></h1></div>
   <div id="main" class="stack grow"></div>
 </div>
@@ -57,24 +57,28 @@ socket.on('p:view', v => {
   if (changed) playerSound(v);
 });
 
+const tile = (o, img, i) => `<button class="ans ${img ? 'hasimg' : ''}" style="--c:var(--a${i})" data-i="${i}" aria-label="ตัวเลือก ${i + 1}"><span class="sh">${SHAPES[i]}</span>${img ? `<img src="${esc(img)}" alt="">` : ''}${o ? `<span class="t">${esc(o)}</span>` : ''}</button>`;
 function render() {
   const v = view; if (!v) return;
   const st = (cls, html) => main.innerHTML = `<div class="status big ${cls}">${html}</div>`;
   if (v.state === 'lobby') {
     st('wait', `<div>คุณเข้าร่วมแล้ว!</div><small>เห็นชื่อ “${esc(v.name)}” บนจอใหญ่ไหม</small>`);
   } else if (v.state === 'intro') {
+    (v.question.optImg || []).forEach(u => { if (u) new Image().src = u; });
     st('wait', `<small>ข้อ ${v.q + 1} / ${v.total}</small><div>เตรียมตัว!</div><div class="spin"></div>`);
   } else if (v.state === 'question') {
     if (myAnswer == null) {
+      const qn = v.question;
       main.innerHTML = `<div class="timer"><i id="bar"></i></div>
-        <div class="answers big">${Array.from({ length: v.question.n }, (_, i) => `<button class="ans" style="--c:var(--a${i})" data-i="${i}" aria-label="ตัวเลือก ${i + 1}"><span class="sh">${SHAPES[i]}</span></button>`).join('')}</div>`;
+        <div class="answers big">${qn.options.map((o, i) => tile(o, (qn.optImg || [])[i], i)).join('')}</div>`;
       runTimer($('#bar'), null, v.question.ms, v.question.time * 1000);
       main.querySelectorAll('.ans').forEach(b => b.onclick = () => {
         const i = +b.dataset.i; myAnswer = i; SFX.click(); buzz(30); render();
         socket.emit('player:answer', i, () => {});
       });
     } else {
-      st('wait', `<span style="font-size:5rem;color:var(--a${myAnswer})">${SHAPES[myAnswer]}</span><div>ส่งคำตอบแล้ว</div><small>รอเพื่อน ๆ ตอบ...</small>`);
+      const mo = (v.question.options || [])[myAnswer] || '';
+      st('wait', `<span style="font-size:4.5rem;color:var(--a${myAnswer})">${SHAPES[myAnswer]}</span><div>ส่งคำตอบแล้ว</div>${mo ? `<small>${esc(mo)}</small>` : ''}<small>รอเพื่อน ๆ ตอบ...</small>`);
     }
   } else if (v.state === 'reveal' || v.state === 'board') {
     const r = v.result || {};

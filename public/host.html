@@ -29,6 +29,7 @@
   <p id="err" class="err center"></p>
 </div>
 <div id="game" class="wrap wide" hidden></div>
+<div id="live" class="live" hidden>👥 <b id="lc">0</b> คน · ออนไลน์ <b id="lo">0</b></div>
 
 <script src="/socket.io/socket.io.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
@@ -44,16 +45,37 @@ const DEFAULT_QUIZ = [
   { text: 'บ่าวสาวเจอกันครั้งแรกเดือนอะไร?', options: ['มกราคม', 'มีนาคม', 'มิถุนายน', 'เมษายน'], correct: 3, time: 20 },
 ];
 const ld = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) || d; } catch (e) { return d; } };
-let quiz = ld('qp_quiz2', DEFAULT_QUIZ);
+const normQ = q => {
+  q = q || {};
+  return {
+    text: String(q.text || ''), correct: +q.correct || 0, time: +q.time || 20,
+    options: [0, 1, 2, 3].map(j => String((q.options || [])[j] || '')),
+    optImg: [0, 1, 2, 3].map(j => String((q.optImg || [])[j] || '')),
+    media: String(q.media || ''),
+  };
+};
+let quiz = ld('qp_quiz2', DEFAULT_QUIZ).map(normQ);
 let theme = Object.assign({}, PRESETS.wedding, { title: 'Wedding Quiz' }, ld('qp_theme2', {}));
-const save = () => { localStorage.setItem('qp_quiz2', JSON.stringify(quiz)); try { localStorage.setItem('qp_theme2', JSON.stringify(theme)); } catch (e) {} };
+const save = () => {
+  try { localStorage.setItem('qp_quiz2', JSON.stringify(quiz)); localStorage.setItem('qp_theme2', JSON.stringify(theme)); }
+  catch (e) { $('#err').textContent = 'เบราว์เซอร์เก็บรูปทั้งหมดไว้ไม่ได้ (เกมยังทำงานปกติ แต่ถ้ารีเฟรชหน้า รูปบางส่วนอาจหาย)'; }
+};
 
 /* ---------- ตัวแก้ไขคำถาม ---------- */
+const ytRe = /(?:youtu\.be\/|youtube(?:-nocookie)?\.com\/(?:watch\?(?:\S*&)?v=|embed\/|shorts\/|live\/))([\w-]{11})/;
+function mediaPrev(m) {
+  if (!m) return '';
+  if (ytRe.test(m)) return '<div class="hint">▶ วิดีโอ YouTube (เล่นอัตโนมัติแบบปิดเสียงบนจอผู้จัด คลิกที่วิดีโอเพื่อเปิดเสียงได้)</div>';
+  if (/\.(mp4|webm|ogv)(\?|#|$)/i.test(m)) return '<div class="hint">🎬 ไฟล์วิดีโอ (เล่นวนอัตโนมัติ ปิดเสียง)</div>';
+  return `<img class="th big" src="${esc(m)}" alt="">`;
+}
 function renderQuiz() {
   $('#qlist').innerHTML = quiz.map((q, i) => `<div class="q" data-i="${i}">
     <div class="row"><b>ข้อ ${i + 1}</b><span class="row"><select data-f="time">${[10, 15, 20, 25, 30, 45, 60].map(t => `<option value="${t}" ${q.time === t ? 'selected' : ''}>${t} วินาที</option>`).join('')}</select><button class="btn sm ghost" data-act="del">ลบ</button></span></div>
     <input data-f="text" value="${esc(q.text)}" placeholder="พิมพ์คำถาม">
-    ${[0, 1, 2, 3].map(j => `<label class="opt" style="--c:var(--a${j})"><input type="radio" name="c${i}" data-f="correct" data-j="${j}" ${q.correct === j ? 'checked' : ''} title="คำตอบที่ถูก"><input data-f="o" data-j="${j}" value="${esc(q.options[j] || '')}" placeholder="ตัวเลือก ${j + 1}${j > 1 ? ' (เว้นว่างได้)' : ''}"></label>`).join('')}
+    <div class="mrow"><input data-f="media" value="${q.media && !q.media.startsWith('data:') ? esc(q.media) : ''}" placeholder="รูป/วิดีโอประกอบคำถาม: วางลิงก์ YouTube, ลิงก์รูป หรือ .mp4 (ไม่บังคับ)"><label class="btn sm ghost" style="margin:0;color:#222">อัปโหลดรูป<input type="file" accept="image/*" hidden data-up="media"></label>${q.media ? '<button class="btn sm ghost" data-act="clrm">ล้าง</button>' : ''}</div>
+    ${mediaPrev(q.media)}
+    ${[0, 1, 2, 3].map(j => `<div class="opt" style="--c:var(--a${j})"><input type="radio" name="c${i}" data-f="correct" data-j="${j}" ${q.correct === j ? 'checked' : ''} title="คำตอบที่ถูก"><input data-f="o" data-j="${j}" value="${esc(q.options[j])}" placeholder="ตัวเลือก ${j + 1}${j > 1 ? ' (เว้นว่างได้)' : ''}">${q.optImg[j] ? `<img class="th" src="${esc(q.optImg[j])}" alt=""><button class="btn sm ghost" data-act="clro" data-j="${j}" title="เอารูปออก">✕</button>` : ''}<label class="btn sm ghost" style="margin:0;color:#222" title="เพิ่มรูปในตัวเลือก">📷<input type="file" accept="image/*" hidden data-up="opt" data-j="${j}"></label></div>`).join('')}
   </div>`).join('');
 }
 const qList = $('#qlist');
@@ -62,19 +84,37 @@ qList.addEventListener('input', e => {
   const q = quiz[+box.dataset.i], f = e.target.dataset.f;
   if (f === 'text') q.text = e.target.value;
   else if (f === 'o') q.options[+e.target.dataset.j] = e.target.value;
+  else if (f === 'media') q.media = e.target.value.trim();
+  else return;
   save();
 });
-qList.addEventListener('change', e => {
+qList.addEventListener('change', async e => {
   const box = e.target.closest('.q'); if (!box) return;
-  const q = quiz[+box.dataset.i], f = e.target.dataset.f;
-  if (f === 'correct') q.correct = +e.target.dataset.j;
-  if (f === 'time') q.time = +e.target.value;
-  save();
+  const q = quiz[+box.dataset.i], f = e.target.dataset.f, up = e.target.dataset.up;
+  if (f === 'correct') { q.correct = +e.target.dataset.j; save(); }
+  else if (f === 'time') { q.time = +e.target.value; save(); }
+  else if (f === 'media') renderQuiz();
+  else if (up && e.target.files[0]) {
+    try {
+      const data = up === 'media'
+        ? await fileToData(e.target.files[0], 960, 'image/jpeg', 0.78)
+        : await fileToData(e.target.files[0], 480, 'image/jpeg', 0.75);
+      if (data.length > 650000) throw new Error('big');
+      if (up === 'media') q.media = data; else q.optImg[+e.target.dataset.j] = data;
+      $('#err').textContent = '';
+    } catch (x) { $('#err').textContent = 'รูปใหญ่เกินไปหรืออ่านไม่สำเร็จ ลองรูปอื่นหรือใช้ลิงก์แทน'; }
+    save(); renderQuiz();
+  }
 });
 qList.addEventListener('click', e => {
-  if (e.target.dataset.act === 'del') { quiz.splice(+e.target.closest('.q').dataset.i, 1); save(); renderQuiz(); }
+  const act = e.target.dataset.act; if (!act) return;
+  const i = +e.target.closest('.q').dataset.i, q = quiz[i];
+  if (act === 'del') quiz.splice(i, 1);
+  else if (act === 'clrm') q.media = '';
+  else if (act === 'clro') q.optImg[+e.target.dataset.j] = '';
+  save(); renderQuiz();
 });
-$('#addq').onclick = () => { quiz.push({ text: '', options: ['', '', '', ''], correct: 0, time: 20 }); save(); renderQuiz(); };
+$('#addq').onclick = () => { quiz.push(normQ({ time: 20 })); save(); renderQuiz(); };
 $('#exp').onclick = () => {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([JSON.stringify(quiz, null, 2)], { type: 'application/json' }));
@@ -82,7 +122,7 @@ $('#exp').onclick = () => {
 };
 $('#imp').onchange = e => {
   const f = e.target.files[0]; if (!f) return;
-  f.text().then(t => { try { const d = JSON.parse(t); if (!Array.isArray(d)) throw 0; quiz = d; save(); renderQuiz(); } catch (x) { $('#err').textContent = 'ไฟล์ JSON ไม่ถูกต้อง'; } });
+  f.text().then(t => { try { const d = JSON.parse(t); if (!Array.isArray(d)) throw 0; quiz = d.map(normQ); save(); renderQuiz(); } catch (x) { $('#err').textContent = 'ไฟล์ JSON ไม่ถูกต้อง'; } });
 };
 
 /* ---------- ตัวแก้ไขธีม ---------- */
@@ -106,7 +146,9 @@ function fileToData(file, maxW, mime, q) {
     img.onload = () => {
       const s = Math.min(1, maxW / img.width), c = document.createElement('canvas');
       c.width = Math.round(img.width * s); c.height = Math.round(img.height * s);
-      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      const cx = c.getContext('2d');
+      if (mime === 'image/jpeg') { cx.fillStyle = '#fff'; cx.fillRect(0, 0, c.width, c.height); }
+      cx.drawImage(img, 0, 0, c.width, c.height);
       URL.revokeObjectURL(url); res(c.toDataURL(mime, q));
     };
     img.onerror = rej; img.src = url;
@@ -147,6 +189,7 @@ socket.on('connect', () => {
 $('#create').onclick = () => {
   $('#err').textContent = '';
   SFX.unlock();
+  if (JSON.stringify({ quiz, theme }).length > 11e6) return $('#err').textContent = 'รูปรวมกันใหญ่เกินไป ลองใช้รูปน้อยลงหรือใช้ลิงก์แทน';
   socket.emit('host:create', { quiz, theme }, r => {
     if (!r.ok) return $('#err').textContent = r.error;
     session = { pin: r.pin, hostKey: r.hostKey }; sessionStorage.setItem('qp_host', JSON.stringify(session));
@@ -154,7 +197,20 @@ $('#create').onclick = () => {
 };
 
 /* ---------- หน้าจอเกม (ฉายบนจอใหญ่) ---------- */
-let cur = null, lastCount = 0, tk = null;
+let cur = null, lastCount = 0, tk = null, joinUrl = '', qLayout = -1, phaseState = null;
+function closeQR() { const o = $('#qrbig'); if (o) o.remove(); }
+function openQR(pin) {
+  closeQR();
+  const o = document.createElement('div');
+  o.id = 'qrbig';
+  o.innerHTML = `<div class="box" id="qrbox"></div><div class="pin">${esc(pin)}</div><div class="muted">คลิกที่ไหนก็ได้ หรือกด Esc เพื่อปิด</div>`;
+  o.onclick = closeQR;
+  document.body.appendChild(o);
+  const size = Math.floor(Math.min(innerWidth, innerHeight) * 0.6);
+  if (window.QRCode) new QRCode($('#qrbox'), { text: joinUrl, width: size, height: size });
+  else $('#qrbox').textContent = joinUrl;
+}
+addEventListener('keydown', e => { if (e.key === 'Escape') closeQR(); });
 function sound(v) {
   clearInterval(tk);
   if (v.state === 'lobby') SFX.music('lobby');
@@ -170,44 +226,74 @@ function sound(v) {
 socket.on('h:view', v => {
   $('#setup').hidden = true; $('#game').hidden = false;
   const changed = v.state !== cur;
-  if (changed || v.state === 'reveal' || v.state === 'board' || v.state === 'final') { cur = v.state; build(v); }
-  if (changed) sound(v);
+  const live = v.state === 'intro' || v.state === 'question';
+  if (live && qLayout === v.q && $('#qbody')) { cur = v.state; phase(v); }
+  else if (changed || v.state === 'reveal' || v.state === 'board' || v.state === 'final') { cur = v.state; build(v); }
+  if (changed) { closeQR(); sound(v); }
   if (v.state === 'lobby' && v.count > lastCount) SFX.join();
   lastCount = v.count;
   update(v);
 });
 const nextBtn = label => `<div class="row" style="justify-content:center;margin-top:20px"><button class="btn big" id="next">${label}</button></div>`;
 const lbList = (top, showGain, offset) => `<ol class="lb">${top.map((p, i) => `<li><span class="l"><span>${i + 1 + (offset || 0)}</span><span>${esc(p.name)}</span></span><span>${p.score}${showGain && p.gain ? `<span class="gain">+${p.gain}</span>` : ''}</span></li>`).join('')}</ol>`;
+function mediaHTML(m, play) {
+  if (!m) return '';
+  if (m.type === 'youtube') return `<div class="vid"><iframe src="https://www.youtube-nocookie.com/embed/${esc(m.id)}?autoplay=${play ? 1 : 0}&mute=1&playsinline=1&rel=0&modestbranding=1" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen referrerpolicy="strict-origin-when-cross-origin" title="video"></iframe></div>`;
+  if (m.type === 'video') return `<video class="qmedia" src="${esc(m.url)}" ${play ? 'autoplay' : ''} muted loop playsinline controls></video>`;
+  return `<img class="qmedia" src="${esc(m.url)}" alt="">`;
+}
+const hostTile = (o, img, i, minH) => `<div class="ans ${img ? 'hasimg' : ''}" style="--c:var(--a${i});min-height:${minH};font-size:clamp(1.2rem,2.6vw,2rem)"><span class="sh">${SHAPES[i]}</span>${img ? `<img src="${esc(img)}" alt="">` : ''}${o ? `<span class="t">${esc(o)}</span>` : ''}</div>`;
+// อ่านคำถาม (intro) กับตอบคำถาม (question) ใช้หน้าเดียวกัน เพื่อให้วิดีโอไม่เริ่มใหม่ตอนเปิดให้ตอบ
+function phase(v) {
+  if (phaseState === v.state) return;
+  phaseState = v.state;
+  const isQ = v.state === 'question';
+  $('#game').classList.toggle('intro', !isQ);
+  $('#qbody').hidden = !isQ;
+  $('#spin').hidden = isQ;
+  $('#next').textContent = isQ ? 'ข้ามเวลา' : 'ข้าม';
+  if (isQ) runTimer($('#bar'), $('#sec'), v.question.ms, v.question.time * 1000);
+}
 function build(v) {
   const g = $('#game');
   const head = `<div class="top"><img data-logo class="logo" alt="" style="display:none"><h1 data-title></h1></div>`;
   const q = v.question;
+  g.classList.remove('intro');
+  g.classList.toggle('has-media', !!(q && q.media));
+  if (v.state !== 'intro' && v.state !== 'question') { qLayout = -1; phaseState = null; }
   if (v.state === 'lobby') {
     g.innerHTML = head + `<div class="lobby">
-      <div class="center"><div id="qr"></div></div>
+      <div class="center"><div id="qr"></div><div class="qrhint">คลิกที่ QR เพื่อขยาย</div></div>
       <div><div class="muted">เข้าร่วมที่เว็บนี้ แล้วใส่ PIN เกม</div><div class="big-text" style="word-break:break-all">${esc(location.host)}</div>
         <div class="pin">${esc(v.pin)}</div></div></div>
       <p class="center count"><b id="cnt">0</b> คนเข้าร่วมแล้ว</p>
       <div id="names" class="chips"></div>
       <div class="row" style="justify-content:center;margin-top:16px"><button class="btn big" id="next">เริ่มเกม</button></div>`;
     const url = location.origin + '/?pin=' + v.pin;
+    joinUrl = url;
     if (window.QRCode) new QRCode($('#qr'), { text: url, width: 220, height: 220 });
     else $('#qr').textContent = url;
-  } else if (v.state === 'intro') {
-    g.innerHTML = head + `<div class="center" style="margin-top:8vh"><div class="count muted">ข้อ ${v.q + 1} / ${v.total}</div>
-      <div class="qcard" style="margin-top:18px;padding:48px 28px;font-size:clamp(2rem,5vw,4rem)">${esc(q.text)}</div><div class="spin"></div></div>`;
-  } else if (v.state === 'question') {
-    g.innerHTML = head + `<div class="qcard">${esc(q.text)}</div>
-      <div class="row" style="justify-content:space-between;margin:16px 0 6px"><div class="clock" id="sec"></div><div class="bigcount"><b id="ans">0</b><span>ตอบแล้ว</span></div></div>
-      <div class="timer"><i id="bar"></i></div>
-      <div class="answers">${q.options.map((o, i) => `<div class="ans" style="--c:var(--a${i});min-height:130px;font-size:clamp(1.2rem,2.6vw,2rem)"><span class="sh">${SHAPES[i]}</span>${esc(o)}</div>`).join('')}</div>
-      <div class="row" style="justify-content:center;margin-top:16px"><button class="btn sm ghost" id="next">ข้ามเวลา</button></div>`;
-    runTimer($('#bar'), $('#sec'), q.ms, q.time * 1000);
+    const qr = $('#qr');
+    qr.tabIndex = 0; qr.setAttribute('role', 'button'); qr.title = 'คลิกเพื่อขยาย';
+    qr.onclick = () => openQR(v.pin);
+    qr.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openQR(v.pin); } };
+  } else if (v.state === 'intro' || v.state === 'question') {
+    const minH = q.media ? '90px' : '130px';
+    g.innerHTML = head + `<div class="count muted center">ข้อ ${v.q + 1} / ${v.total}</div>
+      <div class="qcard" style="margin-top:8px">${esc(q.text)}</div>${mediaHTML(q.media, true)}
+      <div id="qbody" hidden>
+        <div class="row" style="justify-content:space-between;margin:16px 0 6px"><div class="clock" id="sec"></div><div class="bigcount"><b id="ans">0</b><span>ตอบแล้ว</span></div></div>
+        <div class="timer"><i id="bar"></i></div>
+        <div class="answers">${q.options.map((o, i) => hostTile(o, q.optImg[i], i, minH)).join('')}</div>
+      </div>
+      <div class="center" id="spin"><div class="spin"></div></div>
+      <div class="row" style="justify-content:center;margin-top:16px"><button class="btn sm ghost" id="next">ข้าม</button></div>`;
+    qLayout = v.q; phaseState = null; phase(v);
   } else if (v.state === 'reveal') {
     const max = Math.max(1, ...v.reveal.counts), c = v.reveal.correct;
-    g.innerHTML = head + `<div class="qcard">${esc(q.text)}</div>
+    g.innerHTML = head + `<div class="qcard">${esc(q.text)}</div>${q.media && q.media.type === 'image' ? mediaHTML(q.media) : ''}
       <div class="bars">${q.options.map((o, i) => `<div class="bar ${i === c ? '' : 'dim'}" style="--c:var(--a${i});height:${Math.max(3, v.reveal.counts[i] / max * 100)}%">${v.reveal.counts[i]}</div>`).join('')}</div>
-      <div class="bars" style="height:auto;margin:0">${q.options.map((o, i) => `<div class="barlab ${i === c ? '' : 'dim'}">${SHAPES[i]} ${esc(o)}${i === c ? ' ✓' : ''}</div>`).join('')}</div>`
+      <div class="bars" style="height:auto;margin:0">${q.options.map((o, i) => `<div class="barlab ${i === c ? '' : 'dim'}">${q.optImg[i] ? `<img class="thumb" src="${esc(q.optImg[i])}" alt="">` : ''}${SHAPES[i]} ${esc(o)}${i === c ? ' ✓' : ''}</div>`).join('')}</div>`
       + nextBtn(v.q + 1 >= v.total ? 'ดูผลสรุป' : 'ถัดไป');
   } else if (v.state === 'board') {
     g.innerHTML = head + `<div class="big-text center" style="margin-bottom:16px">ตารางคะแนน</div>` + lbList(v.top, true) + nextBtn('ข้อต่อไป');
@@ -229,10 +315,17 @@ function build(v) {
   applyTheme(theme);
 }
 function update(v) {
+  const live = $('#live');
+  live.hidden = false;
+  if (+$('#lc').textContent !== v.count) {
+    $('#lc').textContent = v.count;
+    live.classList.remove('bump'); void live.offsetWidth; live.classList.add('bump');
+  }
+  $('#lo').textContent = v.online;
   if (v.state === 'lobby') {
     $('#cnt').textContent = v.count;
     $('#names').innerHTML = v.names.map(n => `<span class="chip">${esc(n)}</span>`).join('');
-  } else if (v.state === 'question') {
+  } else if (v.state === 'question' && $('#ans')) {
     $('#ans').textContent = v.answered;
   }
 }

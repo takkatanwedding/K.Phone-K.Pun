@@ -95,7 +95,8 @@
   };
   function mount() {
     btn = document.createElement('button');
-    btn.style.cssText = 'position:fixed;right:12px;bottom:12px;z-index:50;width:48px;height:48px;border-radius:50%;border:0;font-size:1.4rem;background:rgba(0,0,0,.45);color:#fff;cursor:pointer';
+    const top = document.body.dataset.sfx === 'top';
+    btn.style.cssText = 'position:fixed;right:10px;' + (top ? 'top:10px;width:40px;height:40px;font-size:1.15rem;' : 'bottom:12px;width:48px;height:48px;font-size:1.4rem;') + 'z-index:50;border-radius:50%;border:0;background:rgba(0,0,0,.45);color:#fff;cursor:pointer';
     btn.onclick = e => { e.stopPropagation(); SFX.setMuted(!muted); };
     document.body.appendChild(btn); SFX.setMuted(muted);
   }

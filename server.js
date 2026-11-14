@@ -7,13 +7,18 @@ const { Server } = require('socket.io');
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, { pingInterval: 20000, pingTimeout: 30000, maxHttpBufferSize: 1e6 });
+const io = new Server(server, { pingInterval: 20000, pingTimeout: 30000, maxHttpBufferSize: 12e6 });
 
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('/host', (_q, r) => r.sendFile(path.join(__dirname, 'public', 'host.html')));
 app.get('/health', (_q, r) => r.send('ok'));
 
 const games = new Map();
+app.get('/m/:pin/:id', (req, res) => {
+  const g = games.get(req.params.pin), m = g && g.media.get(req.params.id);
+  if (!m) return res.status(404).end();
+  res.set({ 'Content-Type': m.mime, 'Cache-Control': 'public, max-age=21600', 'X-Content-Type-Options': 'nosniff' }).send(m.buf);
+});
 const MAX_PLAYERS = 400;
 const HEX = /^#[0-9a-f]{6}$/i;
 const FONTS = ['Kanit', 'Prompt', 'Sarabun', 'Mitr', 'Itim', 'Mali'];
@@ -31,19 +36,70 @@ function cleanTheme(t) {
   return o;
 }
 
+const DATA_IMG = /^data:image\/(png|jpeg|webp|gif);base64,[a-z0-9+/=]+$/i;
+const HTTP_URL = /^https?:\/\/\S{1,490}$/i;
+function ytId(u) {
+  const m = String(u).match(/(?:youtu\.be\/|youtube(?:-nocookie)?\.com\/(?:watch\?(?:\S*&)?v=|embed\/|shorts\/|live\/))([\w-]{11})/);
+  return m ? m[1] : null;
+}
+// รูปของตัวเลือก: '' = ไม่มี, null = ใช้ไม่ได้
+function cleanImg(u) {
+  u = str(u, 700000).trim();
+  if (!u) return '';
+  return (DATA_IMG.test(u) || HTTP_URL.test(u)) ? u : null;
+}
+// สื่อประกอบคำถาม: รูป / YouTube / ไฟล์วิดีโอ
+function cleanMedia(u) {
+  u = str(u, 700000).trim();
+  if (!u) return null;
+  const id = ytId(u);
+  if (id) return { type: 'youtube', id };
+  if (DATA_IMG.test(u)) return { type: 'image', url: u };
+  if (HTTP_URL.test(u)) return { type: /\.(mp4|webm|ogv)(\?|#|$)/i.test(u) ? 'video' : 'image', url: u };
+  return { err: true };
+}
+
 function cleanQuiz(qz) {
   if (!Array.isArray(qz) || !qz.length) return { err: 'ยังไม่มีคำถาม' };
   const out = [];
   for (let i = 0; i < Math.min(qz.length, 100); i++) {
-    const q = qz[i] || {};
+    const q = qz[i] || {}, n = i + 1;
     const text = str(q.text, 200).trim();
-    const opts = (Array.isArray(q.options) ? q.options : []).slice(0, 4).map(o => str(o, 80).trim());
-    while (opts.length && !opts[opts.length - 1]) opts.pop();
+    const opts = [], imgs = [];
+    for (let j = 0; j < 4; j++) {
+      opts.push(str(Array.isArray(q.options) ? q.options[j] : '', 80).trim());
+      const im = cleanImg(Array.isArray(q.optImg) ? q.optImg[j] : '');
+      if (im === null) return { err: 'รูปของตัวเลือกในข้อ ' + n + ' ใช้ไม่ได้ (ต้องเป็นลิงก์ http/https หรือไฟล์ที่อัปโหลด)' };
+      imgs.push(im);
+    }
+    while (opts.length && !opts[opts.length - 1] && !imgs[imgs.length - 1]) { opts.pop(); imgs.pop(); }
     const c = Number(q.correct) | 0;
-    if (!text || opts.length < 2 || opts.some(o => !o) || c < 0 || c >= opts.length) return { err: 'คำถามข้อ ' + (i + 1) + ' ยังไม่ครบ (ต้องมีคำถาม ตัวเลือกอย่างน้อย 2 ข้อ และเลือกคำตอบที่ถูก)' };
-    out.push({ text, options: opts, correct: c, time: Math.min(120, Math.max(5, Number(q.time) || 20)) });
+    if (!text || opts.length < 2 || opts.some((o, k) => !o && !imgs[k]) || c < 0 || c >= opts.length)
+      return { err: 'คำถามข้อ ' + n + ' ยังไม่ครบ (ต้องมีคำถาม ตัวเลือกอย่างน้อย 2 ข้อ และเลือกคำตอบที่ถูก)' };
+    const media = cleanMedia(q.media);
+    if (media && media.err) return { err: 'ลิงก์รูป/วิดีโอของข้อ ' + n + ' ใช้ไม่ได้' };
+    out.push({ text, options: opts, optImg: imgs, correct: c, time: Math.min(120, Math.max(5, Number(q.time) || 20)), media });
   }
   return { quiz: out };
+}
+
+// ย้ายรูปที่อัปโหลด (data URL) ไปเก็บที่เซิร์ฟเวอร์ แล้วใช้ลิงก์สั้นแทน เพื่อให้มือถือ 200 เครื่องโหลดจากแคชได้
+function internMedia(g) {
+  let total = 0;
+  const put = url => {
+    const m = /^data:(image\/(?:png|jpeg|webp|gif));base64,(.+)$/i.exec(url || '');
+    if (!m) return url;
+    const buf = Buffer.from(m[2], 'base64');
+    total += buf.length;
+    if (total > 30e6) throw new Error('too big');
+    const id = rid().slice(0, 10);
+    g.media.set(id, { mime: m[1].toLowerCase(), buf });
+    return '/m/' + g.pin + '/' + id;
+  };
+  for (const q of g.quiz) {
+    if (q.media && q.media.type === 'image') q.media.url = put(q.media.url);
+    q.optImg = q.optImg.map(put);
+  }
 }
 
 function newPin() {
@@ -69,7 +125,7 @@ function hostView(g) {
   for (const p of g.players.values()) if (p.connected) v.online++;
   if (g.state === 'lobby') v.names = [...g.players.values()].map(p => p.name).slice(-250);
   if (q && (g.state === 'intro' || g.state === 'question' || g.state === 'reveal'))
-    v.question = { text: q.text, options: q.options, time: q.time, ms: g.state === 'question' ? Math.max(0, g.deadline - Date.now()) : 0 };
+    v.question = { text: q.text, options: q.options, optImg: q.optImg, media: q.media, time: q.time, ms: g.state === 'question' ? Math.max(0, g.deadline - Date.now()) : 0 };
   if (g.state === 'reveal') v.reveal = { correct: q.correct, counts: g.counts };
   if (g.state === 'board' || g.state === 'final') {
     const list = ranking(g);
@@ -85,8 +141,8 @@ function hostView(g) {
 function playerView(g, p, ri) {
   const q = g.quiz[g.q];
   const v = { state: g.state, name: p.name, score: p.score, q: g.q, total: g.quiz.length, theme: g.theme, answered: p.answer ? p.answer.c : null };
-  if (q && g.state === 'intro') v.question = { time: q.time, n: q.options.length, ms: Math.max(0, g.introEnd - Date.now()) };
-  if (q && g.state === 'question') v.question = { time: q.time, n: q.options.length, ms: Math.max(0, g.deadline - Date.now()) };
+  if (q && g.state === 'intro') v.question = { time: q.time, n: q.options.length, options: q.options, optImg: q.optImg, ms: Math.max(0, g.introEnd - Date.now()) };
+  if (q && g.state === 'question') v.question = { time: q.time, n: q.options.length, options: q.options, optImg: q.optImg, ms: Math.max(0, g.deadline - Date.now()) };
   if (ri && (g.state === 'reveal' || g.state === 'board')) {
     v.result = p.last; v.correct = q.correct; v.rank = ri.rk.get(p.id); v.of = g.players.size;
     const i = ri.list.indexOf(p);
@@ -175,8 +231,9 @@ io.on('connection', s => {
     if (qz.err) return cb({ ok: false, error: qz.err });
     const g = {
       pin: newPin(), hostKey: rid(), quiz: qz.quiz, theme: cleanTheme(d.theme),
-      players: new Map(), state: 'lobby', q: -1, answered: 0, counts: [], deadline: 0, last: Date.now(),
+      players: new Map(), state: 'lobby', q: -1, answered: 0, counts: [], deadline: 0, last: Date.now(), media: new Map(),
     };
+    try { internMedia(g); } catch (e) { return cb({ ok: false, error: 'รูปภาพรวมกันใหญ่เกินไป ลองลดจำนวนรูปหรือใช้ลิงก์แทน' }); }
     games.set(g.pin, g);
     s.join('h:' + g.pin);
     s.data = { host: true, pin: g.pin };
